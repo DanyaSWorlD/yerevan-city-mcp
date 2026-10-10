@@ -14,3 +14,7 @@ session.json
 .DS_Store
 
 CLAUDE.md
+
+# Local-only test suite: kept on disk, deliberately not tracked
+# (fixtures may be copied from a real account).
+test/

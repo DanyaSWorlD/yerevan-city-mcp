@@ -4,8 +4,11 @@ import { Addresses } from "./addresses.js";
 import { Auth } from "./auth.js";
 import { AuthenticatedClient } from "./authenticated-client.js";
 import { ShopCart } from "./cart.js";
+import { OrderDetails } from "./order-details.js";
+import { OrderHistory } from "./orders.js";
 import { ProductSearch } from "./products.js";
 import { SessionStore } from "./session-store.js";
+import { Order, OrderAddress, OrderDetails as OrderDetailsResult } from "./types.js";
 
 /**
  * Builds the yerevan-city.am MCP server: registers every tool against a
@@ -28,7 +31,7 @@ export function buildServer(): McpServer {
       description:
         "Send a login SMS code to a phone number on yerevan-city.am. Call confirm_login_code next with the code the user receives.",
       inputSchema: {
-        phone: z.string().describe("Armenian phone number, e.g. +37441234567"),
+        phone: z.string().describe("Armenian phone number in international format, +374 followed by 8 digits"),
       },
     },
     async ({ phone }) => {
@@ -85,6 +88,53 @@ export function buildServer(): McpServer {
       const client = await authenticated.client();
       const addresses = await new Addresses(client).all();
       return textResult(JSON.stringify(addresses, null, 2));
+    },
+  );
+
+  server.registerTool(
+    "get_order_history",
+    {
+      description:
+        "List the logged-in user's past yerevan-city.am orders. Read-only: it never touches the cart, places or pays for anything. " +
+        "Returns the account's whole history as the API sends it, unfiltered and unsorted, each order with id, createDate, status, paymentMethod, totalPrice, totalToPay and the delivery address it went to. " +
+        "status, paymentMethod and orderOriginType come back as raw numeric codes from the site, not labels — report the numbers as they are and don't invent what a code means. " +
+        "An empty list means the account genuinely has no orders yet (if the stored session had expired, the call fails with a login error instead of reporting zero orders).",
+      inputSchema: {},
+    },
+    async () => {
+      const client = await authenticated.client();
+      const orders = await new OrderHistory(client).all();
+      return textResult(
+        JSON.stringify({ count: orders.length, orders: orders.map(toOrderSummary) }, null, 2),
+      );
+    },
+  );
+
+  server.registerTool(
+    "get_order_details",
+    {
+      description:
+        "Show one past yerevan-city.am order with the exact line items that were ordered. Read-only: one GET for a single order, it never touches the cart, places or pays for anything. " +
+        "orderId must be the numeric `id` of an order as listed by get_order_history — NOT `uniqueId`, which is a different code in a different namespace and is rejected here. " +
+        "Use this to answer what was actually in an order, or what an order cost; use get_order_history to find the id first, then call this for the one order in question (there is no way to read many orders' contents at once). " +
+        "Read each item's isKilogram: a weight-based line carries its amount in `weight` (grams) and reports `quantity` 0, so `quantity` alone under-reports what was bought — never work out a line's cost as quantity * price, use the line's totalPrice. " +
+        "`items` is what was ordered; `deletedItems` is what the customer removed from the cart before checkout, so do not add the two together. " +
+        "The order's totalPrice/totalToPay are the site's own figures and already account for delivery and discounts — never total the items yourself. " +
+        "status, paymentMethod and orderOriginType come back as raw numeric codes from the site, not labels — report the numbers as they are and don't invent what a code means. " +
+        "The order's delivery address is included as `order.address`, in the same one-line form get_order_history reports it and reading \"no address on this order\" when the order has none — a pickup order has none. " +
+        "The customer's phone numbers, card details and order comment are deliberately not included. " +
+        "An id that doesn't exist fails with a not-found error and a logged-out session fails with a login error, so an error here is never a silently empty order.",
+      inputSchema: {
+        orderId: z
+          .number()
+          .int()
+          .describe("Numeric id of a single order, from the id field of get_order_history (not uniqueId)"),
+      },
+    },
+    async ({ orderId }) => {
+      const client = await authenticated.client();
+      const details = await new OrderDetails(client).get(orderId);
+      return textResult(JSON.stringify(toOrderDetailsOutput(details), null, 2));
     },
   );
 
@@ -199,4 +249,69 @@ export function buildServer(): McpServer {
 
 function textResult(text: string) {
   return { content: [{ type: "text" as const, text }] };
+}
+
+/**
+ * Trims an order down to what is useful in a conversation: the raw enum
+ * codes stay numeric (see the TODO in orders.ts) and the address collapses
+ * to one line instead of a nested object per order.
+ */
+function toOrderSummary(order: Order) {
+  return {
+    id: order.id,
+    createDate: order.createDate,
+    status: order.status,
+    paymentMethod: order.paymentMethod,
+    totalPrice: order.totalPrice,
+    totalToPay: order.totalToPay,
+    address: describeOrderAddress(order.address),
+  };
+}
+
+/**
+ * Shapes one order's contents for the conversation: the order's own fields
+ * under `order`, its lines, and the counts that let a reader see at a glance
+ * how much was ordered and how much was dropped before checkout. Totals come
+ * from the order untouched (see the TODO in order-details.ts) and the
+ * delivery address is collapsed to one line by the same renderer
+ * `get_order_history` uses, so an address reads identically in both tools.
+ */
+function toOrderDetailsOutput(details: OrderDetailsResult) {
+  return {
+    order: {
+      id: details.id,
+      createDate: details.createDate,
+      finishDate: details.finishDate,
+      status: details.status,
+      paymentMethod: details.paymentMethod,
+      orderOriginType: details.orderOriginType,
+      paymentTypeLogo: details.paymentTypeLogo,
+      isDelivery: details.isDelivery,
+      cityId: details.cityId,
+      totalPrice: details.totalPrice,
+      totalToPay: details.totalToPay,
+      userDeliveryFee: details.userDeliveryFee,
+      serviceFee: details.serviceFee,
+      driverTipAmount: details.driverTipAmount,
+      address: describeOrderAddress(details.address),
+    },
+    itemCount: details.items.length,
+    items: details.items,
+    deletedItemCount: details.deletedItems.length,
+    deletedItems: details.deletedItems,
+  };
+}
+
+function describeOrderAddress(address: OrderAddress | null): string {
+  if (address === null) return "no address on this order";
+  const place = `${address.city}, ${address.street}`;
+  const detail = [
+    address.buliding.length > 0 ? `building ${address.buliding}` : null,
+    address.entrance !== null ? `entrance ${address.entrance}` : null,
+    address.floor !== null ? `floor ${address.floor}` : null,
+    address.apartment !== null ? `apartment ${address.apartment}` : null,
+  ]
+    .filter((part) => part !== null)
+    .join(", ");
+  return detail.length > 0 ? `${place} (${detail})` : place;
 }

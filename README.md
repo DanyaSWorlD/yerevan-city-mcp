@@ -20,6 +20,8 @@ app.
 - Show your saved delivery addresses
 - Add and remove products from the cart
 - Show the cart contents and total price
+- Show your past orders, their totals and where they went
+- Show the exact items in any one past order, and where it went
 
 ## Installation
 
@@ -108,6 +110,8 @@ it keeps working across restarts.
 - `request_login_code` / `confirm_login_code` — one-time phone + SMS login
 - `search_products` — free-text product search
 - `list_addresses` — the account's saved delivery addresses
+- `get_order_history` — every past order, read-only, with its totals and address. `status` and `paymentMethod` come back as the site's own numeric codes and are passed through unlabelled.
+- `get_order_details` — the line items of one past order, by the numeric `id` from `get_order_history`. Read-only. Includes the delivery address the order went to, in the same one-line form `get_order_history` reports it, but not the customer's phone numbers, card details or order comment. Weight-based items carry their amount in `weight` and report `quantity` 0, and the order's own totals are reported rather than recomputed. `status`, `paymentMethod` and `orderOriginType` are passed through as the site's numeric codes, like above.
 - `add_to_cart` / `remove_from_cart` — build the cart, by piece count or by weight
 - `get_cart` — current cart contents and total price
 
@@ -142,5 +146,10 @@ City / City Supermarket in any way.
 
 - How does the flow behave for a phone number with no existing yerevan-city.am account yet?
 - What if the account has no saved address at all (not just none given explicitly)?
+- Label the order `status` / `paymentMethod` / `orderOriginType` codes (and the
+  `activityType` of an order's timeline), and add paging or filtering for
+  accounts with a long order history. The API does send its own
+  `paymentTypeName` label for the payment method — worth checking whether the
+  site's order pages expose equivalents for the others.
 - add Carrefour, Zovk, Sas, 88, Tsiran to find a better price
 - add a `--version` CLI flag to print the installed package version
